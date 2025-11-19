@@ -209,3 +209,9 @@ __marimo__/
 #WSL
 *.Zone.Identifier
 *:Zone.Identifier
+
+similarity/
+input/Cookies/
+output/download.csv
+output/videos.json
+
