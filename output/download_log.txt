@@ -5724,3 +5724,34 @@
 [INFO] 2025-11-24 08:01:12,526 Successfully downloaded: -dAmqHFWzyg
 [INFO] 2025-11-24 08:05:15,148 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/lzB6UH5xnKU.mp4
 [INFO] 2025-11-24 08:05:15,222 Successfully downloaded: lzB6UH5xnKU
+[INFO] 2025-11-24 08:08:54,298 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/0OOXGwLENyY.mp4
+[INFO] 2025-11-24 08:08:54,354 Successfully downloaded: 0OOXGwLENyY
+[INFO] 2025-11-24 08:09:08,239 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/tCp0ZneTf_E.mp4
+[INFO] 2025-11-24 08:09:08,298 Successfully downloaded: tCp0ZneTf_E
+[INFO] 2025-11-24 08:09:44,777 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/D-cy_fmbNRI.mp4
+[INFO] 2025-11-24 08:09:44,840 Successfully downloaded: D-cy_fmbNRI
+[INFO] 2025-11-24 08:11:19,006 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/U6761xgzCdw.mp4
+[INFO] 2025-11-24 08:11:19,064 Successfully downloaded: U6761xgzCdw
+[ERROR] 2025-11-24 08:11:44,927 Download claimed success but file not found: oSeRv_I5ZT0
+[INFO] 2025-11-24 08:12:57,980 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/AXaj06brxEs.mp4
+[INFO] 2025-11-24 08:12:58,047 Successfully downloaded: AXaj06brxEs
+[INFO] 2025-11-24 08:14:23,989 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/cBom7aDuy9w.mp4
+[INFO] 2025-11-24 08:14:24,045 Successfully downloaded: cBom7aDuy9w
+[WARNING] 2025-11-24 08:14:24,045 Batch finished with 1 failure(s), 0 captcha challenges
+[INFO] 2025-11-24 08:14:24,045 Batch completed: 14 downloaded, 1 failed.
+[INFO] 2025-11-24 08:14:24,108 === Download Complete: 118 success, 21 failed in 106.5 minutes ===
+[INFO] 2025-11-24 08:14:24,108 Download process completed or terminated
+[INFO] 2025-11-24 08:14:40,520 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/NsrIGlYxTa4.mp4
+[INFO] 2025-11-24 08:14:40,592 Successfully downloaded: NsrIGlYxTa4
+[INFO] 2025-11-24 08:16:21,035 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/-O7VGpjb_3Q.mp4
+[INFO] 2025-11-24 08:16:21,108 Successfully downloaded: -O7VGpjb_3Q
+[INFO] 2025-11-24 08:25:29,465 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/f81ZhM4YPIo.mp4
+[INFO] 2025-11-24 08:25:29,529 Successfully downloaded: f81ZhM4YPIo
+[INFO] 2025-11-24 08:27:11,903 [DOWNLOAD FINISHED] /home/juan/Downloads/YouTube/XHq3d2bGpjs.mp4
+[INFO] 2025-11-24 08:27:11,963 Successfully downloaded: XHq3d2bGpjs
+[INFO] 2025-11-24 08:27:11,963 Batch completed successfully with no failures
+[INFO] 2025-11-24 08:27:11,964 Using 'mweb' client for this batch.
+[INFO] 2025-11-24 08:27:11,964 Batch completed: 14 downloaded, 0 failed.
+[INFO] 2025-11-24 08:27:11,964 Selected cookie file: input/Cookies/191125_adrian_sp_cookies.txt (one of 16 valid files)
+[INFO] 2025-11-24 08:27:11,964 Using cookies from file: input/Cookies/191125_adrian_sp_cookies.txt
+[INFO] 2025-11-24 08:27:11,964 Batch processing: 14 videos
