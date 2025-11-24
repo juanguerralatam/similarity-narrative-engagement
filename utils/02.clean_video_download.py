@@ -11,14 +11,13 @@ csv_data = []
 for video in videos:
     video_id = video['videoId']
     channel_id = video['channelId']
-    url = f"https://www.youtube.com/watch?v={video_id}"
     status = ""  # or set to 'pending' or whatever default
-    csv_data.append([video_id, channel_id, url, status])
+    csv_data.append([video_id, channel_id, status])
 
 # Write to download.csv
 with open('output/download.csv', 'w', newline='') as f:
     writer = csv.writer(f)
-    writer.writerow(['videoId', 'channelId', 'video_url', 'status'])
+    writer.writerow(['videoId', 'channelId', 'status'])
     writer.writerows(csv_data)
 
 print("download.csv created successfully.")

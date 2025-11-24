@@ -6,6 +6,9 @@ import random
 import logging
 import argparse
 import threading
+import fcntl  # For file locking
+import tempfile
+import ssl
 from pathlib import Path
 from typing import List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -65,11 +68,13 @@ def build_yt_dlp_opts() -> dict:
         "concurrent_fragments": min(config.CONCURRENT_FRAGMENTS, 8),
         "sleep_interval": random.uniform(2.0, 5.0) + random.uniform(0.1, 0.5),
         "max_sleep_interval": random.uniform(2.0, 5.0) + random.uniform(0.5, 1.5),
-        "retries": 3,
-        "fragment_retries": 8,
+        "retries": 10,  # Increased for SSL issues
+        "fragment_retries": 15,  # Increased for SSL issues
+        "retry_sleep": 5.0,  # Wait 5 seconds between retries
+        "retry_sleep_functions": {"http": lambda n: min(5 + n * 2, 30)},  # Progressive backoff
+        "socket_timeout": 30,  # Longer socket timeout for VPN
         "quiet": True,
         "no_warnings": True,
-        "download_archive": str(config.ARCHIVE_FILE),
         "progress_hooks": [progress_hook],
         "user_agent": user_agent,
         "http_headers": {
@@ -163,42 +168,125 @@ def get_cookies_config() -> dict:
     log.warning("No valid cookie sources available. Bot detection likely.")
     return cookies_config
 
-def update_csv_status(video_id: str, status: str):
-    with csv_lock:
-        if not config.CSV_FILE.exists():
-            return
+def verify_download_exists(video_id: str) -> bool:
+    """Check if video file actually exists in output directory"""
+    common_extensions = ['.mp4', '.webm', '.mkv', '.m4a']
+    for ext in common_extensions:
+        file_path = config.OUTPUT_DIR / f"{video_id}{ext}"
+        if file_path.exists() and file_path.stat().st_size > 1024:  # At least 1KB
+            return True
+    return False
 
-        temp_file = config.CSV_FILE.parent / 'download_temp.csv'
-        found = False
+def add_to_archive(video_id: str):
+    """Add video ID to download archive after successful verification"""
+    try:
+        with config.ARCHIVE_FILE.open('a', encoding='utf-8') as f:
+            f.write(f"youtube {video_id}\n")
+        log.debug(f"Added {video_id} to archive")
+    except Exception as e:
+        log.error(f"Error adding {video_id} to archive: {e}")
+
+def remove_from_archive(video_id: str):
+    """Remove video ID from download archive if download failed"""
+    if not config.ARCHIVE_FILE.exists():
+        return
+    
+    try:
+        with config.ARCHIVE_FILE.open('r', encoding='utf-8') as f:
+            lines = f.readlines()
         
-        try:
-            with config.CSV_FILE.open('r', newline='', encoding='utf-8') as csvfile, \
-                 temp_file.open('w', newline='', encoding='utf-8') as tempfile:
-                reader = csv.DictReader(csvfile)
-                fieldnames = reader.fieldnames
-                if fieldnames and 'status' not in fieldnames:
-                    fieldnames.append('status')
+        # Filter out the failed video
+        updated_lines = [line for line in lines if not line.strip().endswith(video_id)]
+        
+        if len(updated_lines) < len(lines):
+            with config.ARCHIVE_FILE.open('w', encoding='utf-8') as f:
+                f.writelines(updated_lines)
+            log.debug(f"Removed {video_id} from archive")
+    except Exception as e:
+        log.error(f"Error removing {video_id} from archive: {e}")
 
-                writer = csv.DictWriter(tempfile, fieldnames=fieldnames)
-                writer.writeheader()
+def update_csv_status(video_id: str, status: str):
+    """Update CSV status with proper file locking for multi-process safety"""
+    if not config.CSV_FILE.exists():
+        return
+
+    # Use a more unique temp file name to avoid conflicts between processes
+    import os
+    pid = os.getpid()
+    timestamp = int(time.time() * 1000000)  # microsecond precision
+    temp_file = config.CSV_FILE.parent / f'download_temp_{pid}_{timestamp}.csv'
+    
+    max_retries = 5
+    retry_delay = 0.1
+    
+    for attempt in range(max_retries):
+        try:
+            # Use file locking to prevent race conditions between processes
+            with config.CSV_FILE.open('r+', newline='', encoding='utf-8') as csvfile:
+                # Lock the file for exclusive access
+                fcntl.flock(csvfile.fileno(), fcntl.LOCK_EX)
                 
-                for row in reader:
-                    if row.get('videoId') == video_id:
-                        row['status'] = status
-                        found = True
-                    writer.writerow(row)
+                try:
+                    csvfile.seek(0)
+                    reader = csv.DictReader(csvfile)
+                    fieldnames = reader.fieldnames
+                    if fieldnames and 'status' not in fieldnames:
+                        fieldnames.append('status')
+
+                    rows = []
+                    found = False
                     
-            if found:
-                temp_file.replace(config.CSV_FILE)
+                    for row in reader:
+                        if row.get('videoId') == video_id:
+                            row['status'] = status
+                            found = True
+                        rows.append(row)
+                    
+                    if found:
+                        # Write to temporary file first
+                        with temp_file.open('w', newline='', encoding='utf-8') as tempfile:
+                            writer = csv.DictWriter(tempfile, fieldnames=fieldnames)
+                            writer.writeheader()
+                            writer.writerows(rows)
+                        
+                        # Atomically replace the original file
+                        temp_file.replace(config.CSV_FILE)
+                        log.debug(f"Updated status for {video_id}: {status}")
+                        break
+                    else:
+                        log.warning(f"Video ID {video_id} not found in CSV")
+                        break
+                        
+                finally:
+                    # Unlock the file
+                    fcntl.flock(csvfile.fileno(), fcntl.LOCK_UN)
+                    
+        except (IOError, OSError) as e:
+            if attempt < max_retries - 1:
+                log.warning(f"CSV update attempt {attempt + 1} failed for {video_id}, retrying in {retry_delay}s: {e}")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
             else:
-                temp_file.unlink()
+                log.error(f"Failed to update CSV status after {max_retries} attempts for {video_id}: {e}")
         except Exception as e:
-            log.error(f"Failed to update CSV status: {e}")
+            log.error(f"Unexpected error updating CSV status for {video_id}: {e}")
+            break
+        finally:
+            # Clean up temp file if it exists
             if temp_file.exists():
-                temp_file.unlink()
+                try:
+                    temp_file.unlink()
+                except:
+                    pass
 
 def generate_archive_from_csv():
+    """Generate archive file from CSV done entries - used for initial setup only"""
     if not config.CSV_FILE.exists():
+        return
+    
+    # Only regenerate archive if it doesn't exist
+    if config.ARCHIVE_FILE.exists():
+        log.debug("Archive file already exists, skipping regeneration")
         return
 
     done_ids = []
@@ -207,60 +295,93 @@ def generate_archive_from_csv():
             reader = csv.DictReader(f)
             for row in reader:
                 if row.get('status') == 'done' and row.get('videoId'):
-                    done_ids.append(f"youtube {row['videoId']}")
+                    # Only add to archive if file actually exists
+                    if verify_download_exists(row['videoId']):
+                        done_ids.append(f"youtube {row['videoId']}")
+                    else:
+                        log.warning(f"CSV marked as done but file missing, not adding to archive: {row['videoId']}")
     except Exception as e:
         log.error(f"Error reading CSV for archive: {e}")
         return
 
     try:
-        with config.ARCHIVE_FILE.open('w', encoding='utf-8') as f:
-            for line in done_ids:
-                f.write(line + '\n')
-        log.info(f"Generated archive with {len(done_ids)} done videos")
+        # Only write if we have valid entries
+        if done_ids:
+            with config.ARCHIVE_FILE.open('w', encoding='utf-8') as f:
+                for line in done_ids:
+                    f.write(line + '\n')
+            log.info(f"Generated archive with {len(done_ids)} verified videos")
+        else:
+            # Create empty archive file
+            config.ARCHIVE_FILE.touch()
+            log.info("Created empty archive file")
     except Exception as e:
         log.error(f"Error writing archive: {e}")
 
 def update_csv_from_archive():
-    with csv_lock:
-        if not config.ARCHIVE_FILE.exists() or not config.CSV_FILE.exists():
-            return
+    """Update CSV from archive with proper file locking"""
+    if not config.ARCHIVE_FILE.exists() or not config.CSV_FILE.exists():
+        return
 
-        archived_ids = set()
-        try:
-            with config.ARCHIVE_FILE.open('r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith('youtube '):
-                        vid = line.split(' ', 1)[1]
-                        archived_ids.add(vid)
-        except Exception as e:
-            log.error(f"Error reading archive: {e}")
-            return
+    archived_ids = set()
+    try:
+        with config.ARCHIVE_FILE.open('r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('youtube '):
+                    vid = line.split(' ', 1)[1]
+                    archived_ids.add(vid)
+    except Exception as e:
+        log.error(f"Error reading archive: {e}")
+        return
 
-        temp_file = config.CSV_FILE.parent / 'download_temp.csv'
-        updated = 0
-        try:
-            with config.CSV_FILE.open('r', newline='', encoding='utf-8') as csvfile, \
-                 temp_file.open('w', newline='', encoding='utf-8') as tempfile:
+    # Use unique temp file name
+    import os
+    pid = os.getpid()
+    timestamp = int(time.time() * 1000000)
+    temp_file = config.CSV_FILE.parent / f'download_temp_archive_{pid}_{timestamp}.csv'
+    
+    updated = 0
+    try:
+        with config.CSV_FILE.open('r+', newline='', encoding='utf-8') as csvfile:
+            # Lock the file for exclusive access
+            fcntl.flock(csvfile.fileno(), fcntl.LOCK_EX)
+            
+            try:
+                csvfile.seek(0)
                 reader = csv.DictReader(csvfile)
                 fieldnames = reader.fieldnames
-                writer = csv.DictWriter(tempfile, fieldnames=fieldnames)
-                writer.writeheader()
                 
+                rows = []
                 for row in reader:
                     vid = row.get('videoId')
                     if vid in archived_ids and row.get('status') != 'done':
                         row['status'] = 'done'
                         updated += 1
-                    writer.writerow(row)
+                    rows.append(row)
+                
+                # Write to temp file
+                with temp_file.open('w', newline='', encoding='utf-8') as tempfile:
+                    writer = csv.DictWriter(tempfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(rows)
+                
+                # Atomically replace
+                temp_file.replace(config.CSV_FILE)
+                if updated > 0:
+                    log.info(f"Updated {updated} videos to 'done' from archive")
                     
-            temp_file.replace(config.CSV_FILE)
-            if updated > 0:
-                log.info(f"Updated {updated} videos to 'done' from archive")
-        except Exception as e:
-            log.error(f"Error updating CSV from archive: {e}")
-            if temp_file.exists():
+            finally:
+                fcntl.flock(csvfile.fileno(), fcntl.LOCK_UN)
+                
+    except Exception as e:
+        log.error(f"Error updating CSV from archive: {e}")
+    finally:
+        if temp_file.exists():
+            try:
                 temp_file.unlink()
+            except:
+                pass
 
 def download_batch(urls: List[str]) -> Tuple[int, int, List[str]]:
     if not urls:
@@ -287,9 +408,17 @@ def download_batch(urls: List[str]) -> Tuple[int, int, List[str]]:
                     time.sleep(random_delay)
                 
                 ydl.download([url])
-                success += 1
-                update_csv_status(video_id, "done")
-                log.info(f"Successfully downloaded: {video_id}")
+                
+                # Verify file actually exists before marking as done
+                if verify_download_exists(video_id):
+                    success += 1
+                    update_csv_status(video_id, "done")
+                    add_to_archive(video_id)  # Only add to archive after verification
+                    log.info(f"Successfully downloaded: {video_id}")
+                else:
+                    log.error(f"Download claimed success but file not found: {video_id}")
+                    update_csv_status(video_id, "failed")
+                    remove_from_archive(video_id)
                 
         except yt_dlp.utils.DownloadError as e:
             error_message = str(e)
@@ -297,15 +426,41 @@ def download_batch(urls: List[str]) -> Tuple[int, int, List[str]]:
                 log.warning(f"Captcha challenge detected for {video_id}: {error_message}")
                 captcha_challenged_urls.append(url)
                 update_csv_status(video_id, "captcha_challenge")
+                remove_from_archive(video_id)
+            elif "ssl" in error_message.lower() or "eof" in error_message.lower() or "connection" in error_message.lower():
+                log.warning(f"SSL/Connection error for {video_id} (VPN related): {error_message}")
+                log.info(f"Retrying {video_id} in 10 seconds due to VPN connection issue...")
+                time.sleep(10)  # Wait longer for VPN to stabilize
+                
+                # Retry once with fresh connection
+                try:
+                    with yt_dlp.YoutubeDL(build_yt_dlp_opts()) as retry_ydl:
+                        retry_ydl.download([url])
+                        if verify_download_exists(video_id):
+                            success += 1
+                            update_csv_status(video_id, "done")
+                            add_to_archive(video_id)
+                            log.info(f"Successfully downloaded on retry: {video_id}")
+                        else:
+                            log.warning(f"Retry failed for {video_id}, will try again later")
+                            update_csv_status(video_id, "ssl_retry")  # Special status for SSL issues
+                            remove_from_archive(video_id)
+                except Exception as retry_e:
+                    log.warning(f"Retry also failed for {video_id}: {str(retry_e)}")
+                    update_csv_status(video_id, "ssl_retry")  # Mark for later retry instead of failed
+                    remove_from_archive(video_id)
             elif "unavailable" in error_message.lower():
                 log.warning(f"Video {video_id} is unavailable: {error_message}")
                 update_csv_status(video_id, "unavailable")
+                remove_from_archive(video_id)
             else:
                 log.error(f"Error downloading {video_id}: {error_message}")
                 update_csv_status(video_id, "failed")
+                remove_from_archive(video_id)
         except Exception as e:
             log.error(f"Unexpected error downloading {video_id}: {str(e)}")
             update_csv_status(video_id, "failed")
+            remove_from_archive(video_id)
     
     fail = len(urls) - success
     
@@ -326,10 +481,11 @@ def main(channel_id: Optional[str] = None):
     try:
         with config.CSV_FILE.open(newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            rows = [row for row in reader if row.get('video_url')]
+            rows = [row for row in reader if row.get('videoId')]
             if channel_id:
                 rows = [row for row in rows if row.get('channelId') == channel_id]
-            urls = [row['video_url'] for row in rows if row.get('status') != 'done']
+            video_ids = [row['videoId'] for row in rows if row.get('status') not in ['done', 'unavailable']]
+            urls = [f"https://www.youtube.com/watch?v={vid}" for vid in video_ids]
             random.shuffle(urls)
             log.info(f"Found {len(urls)} videos to download." + (f" for channel {channel_id}" if channel_id else ""))
     except Exception as e:
@@ -345,12 +501,17 @@ def main(channel_id: Optional[str] = None):
 
     with ThreadPoolExecutor(max_workers=4) as executor:  # Adjust max_workers as needed
         futures = []
-        batch_count = (len(urls) + config.BATCH_DOWNLOAD_SIZE - 1) // config.BATCH_DOWNLOAD_SIZE
-        for i in range(0, len(urls), config.BATCH_DOWNLOAD_SIZE):
-            batch_urls = urls[i:i + config.BATCH_DOWNLOAD_SIZE]
-            batch_num = i // config.BATCH_DOWNLOAD_SIZE + 1
-            log.info(f"--- Submitting batch {batch_num}/{batch_count} ({len(batch_urls)} videos) ---")
+        i = 0
+        batch_num = 1
+        while i < len(urls):
+            batch_size = random.randint(8, 16)
+            batch_urls = urls[i:i + batch_size]
+            if not batch_urls:
+                break
+            log.info(f"--- Submitting batch {batch_num} ({len(batch_urls)} videos) ---")
             futures.append(executor.submit(download_batch, batch_urls))
+            i += len(batch_urls)
+            batch_num += 1
         
         for future in as_completed(futures):
             success, fail, captcha_challenged_urls = future.result()
